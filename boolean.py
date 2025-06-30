@@ -1,13 +1,14 @@
 import ply.lex as lex
 import ply.yacc as yacc
 
+### LEXER
+
 tokens = (
     'VAR',
     'CONJUNCTION', 'DISJUNCTION', 'IMPLICATION', 'NEGATION',
     'LPAREN', 'RPAREN'
 )
 
-# Tokens
 t_VAR = r'[a-z]'
 t_CONJUNCTION = r'/\\'
 t_DISJUNCTION = r'\\/'
@@ -15,34 +16,27 @@ t_IMPLICATION = r'->'
 t_NEGATION = r'~'
 t_LPAREN = r'\('
 t_RPAREN = r'\)'
-
-# Ignored characters
 t_ignore = ' \t'
 
-
 def t_error(t):
-    print("Illegal character '%s'" % t.value[0])
+    print(f"Illegal character '{t.value[0]}'")
     t.lexer.skip(1)
 
+lexer = lex.lex()
 
-lex.lex()
+### PARSER
 
-
-# Grammar
 def p_expression_conjunction(p):
     'expression : expression CONJUNCTION expression'
-    p[0] = [p[1], p[3]]
-
+    p[0] = p[1] + p[3]
 
 def p_expression_paren(p):
     'expression : LPAREN expression RPAREN'
     p[0] = p[2]
 
-
 def p_expression_clause(p):
     'expression : clause'
-    p[0] = p[1]
-
+    p[0] = [p[1]]
 
 def p_clause_implication(p):
     'clause : literal IMPLICATION literal'
@@ -51,129 +45,101 @@ def p_clause_implication(p):
     else:
         p[0] = ['~' + p[1], p[3]]
 
-
 def p_clause_disjunction(p):
     'clause : literal DISJUNCTION literal'
     p[0] = [p[1], p[3]]
-
 
 def p_clause_unit(p):
     'clause : literal'
     p[0] = [p[1]]
 
-
-def p_lit_negation(p):
+def p_literal_negation(p):
     'literal : NEGATION literal'
-    p[0] = p[1] + p[2]
+    p[0] = '~' + p[2]
 
-
-def p_lit_var(p):
+def p_literal_var(p):
     'literal : VAR'
     p[0] = p[1]
 
-
 def p_error(p):
-    print("Syntax error at '%s'" % p.value)
-
+    if p:
+        print(f"Syntax error at '{p.value}'")
+    else:
+        print("Syntax error at EOF")
 
 parser = yacc.yacc()
 
-
-def flatten(lst):
-    if isinstance(lst[0], list) and isinstance(lst[1], list) and len(lst[0]) == 1:
-        yield lst[0]
-        yield from flatten(lst[1])
-    elif isinstance(lst[0], list) and isinstance(lst[1], list):
-        yield from flatten(lst[0])
-        yield from flatten(lst[1])
-    elif isinstance(lst[0], list) and isinstance(lst[1], lst) and len(lst[1]) == 1:
-        yield from flatten(lst[0])
-        yield lst[1]
-    else:
-        yield lst
-
+### UTILITY
 
 def is_tautology(clause):
-    for literal1 in clause:
-        for literal2 in clause:
-            if literal1 == f"~{literal2}":
-                return True
-    return False
-
+    return any(f"~{lit}" in clause for lit in clause)
 
 def has_duplicate_literals(clause):
-    literals = set()
-    for literal in clause:
-        if literal in literals or f"~{literal}" in literals:
-            return True
-        literals.add(literal)
-    return False
-
+    return len(set(clause)) < len(clause)
 
 def resolve(clause1, clause2):
-    new_clause = []
+    for lit in clause1:
+        if f"~{lit}" in clause2:
+            new_clause = list(set([x for x in clause1 if x != lit] + [x for x in clause2 if x != f"~{lit}"]))
+            return new_clause
+        if lit.startswith('~') and lit[1:] in clause2:
+            new_clause = list(set([x for x in clause1 if x != lit] + [x for x in clause2 if x != lit[1:]]))
+            return new_clause
+    return None
 
-    for literal1 in clause1:
-        for literal2 in clause2:
-            if literal1 == f"~{literal2}" or literal2 == f"~{literal1}":
-                new_clause.extend(
-                    [lit for lit in clause1 if lit != literal1] + [lit for lit in clause2 if lit != literal2])
-                return new_clause
+### SATISFIABILITY
 
-
-def is_satisfiable(cnf):
-    cnf = list(flatten(parser.parse(cnf)))
-    new_clauses = [clause for clause in cnf if
-                   not is_tautology(clause) and not has_duplicate_literals(clause)]  # Remove tautologies and duplicates
-    visited = set(map(lambda c: tuple(sorted(c)), new_clauses))  # Keep track of visited clauses
+def is_satisfiable(cnf, trace=True):
+    clauses = parser.parse(cnf)
+    clauses = [c for c in clauses if not is_tautology(c) and not has_duplicate_literals(c)]
+    seen = set(tuple(sorted(c)) for c in clauses)
+    steps = []
 
     while True:
-        new_clause_added = False  # Track if any new clause is added in this iteration
-        for i in range(len(new_clauses)):
-            for j in range(i + 1, len(new_clauses)):
-                clause1 = new_clauses[i]
-                clause2 = new_clauses[j]
-                resolvent = resolve(clause1, clause2)
+        new_clause_added = False
+        for i in range(len(clauses)):
+            for j in range(i + 1, len(clauses)):
+                c1, c2 = clauses[i], clauses[j]
+                resolvent = resolve(c1, c2)
                 if resolvent:
-                    sorted_resolvent = tuple(sorted(resolvent))
-                    if sorted_resolvent not in visited and not is_tautology(resolvent) and not has_duplicate_literals(
-                            resolvent):
-                        visited.add(sorted_resolvent)
-                        new_clauses.append(resolvent)
+                    resolvent_key = tuple(sorted(resolvent))
+                    if resolvent_key not in seen and not is_tautology(resolvent):
+                        seen.add(resolvent_key)
+                        clauses.append(resolvent)
+                        steps.append((c1, c2, resolvent))
                         new_clause_added = True
-                        if (len(resolvent) == 1 and f"~{resolvent[0]}" in new_clauses[-1]) or (
-                                len(resolvent) == 1 and resolvent[0] in new_clauses[-1]):
-                            return False  # Unsatisfiable
+                        if resolvent == []:
+                            if trace:
+                                print("\nResolution Trace (UNSAT):")
+                                for s in steps:
+                                    print(f"{s[0]} ∧ {s[1]} ⟶ {s[2]}")
+                            return False
         if not new_clause_added:
-            return True, new_clauses  # Satisfiable
+            if trace:
+                print("\nResolution Trace (SAT):")
+                for s in steps:
+                    print(f"{s[0]} ∧ {s[1]} ⟶ {s[2]}")
+            return True, clauses
 
+### ASSIGNMENT
 
 def sat_assignment(cnf):
-    variables = set()
-    satisfying_assignment = {}
-    r, resolution_clauses = is_satisfiable(cnf)
-    cnf = list(flatten(parser.parse(cnf)))
-    for clause in cnf:
-        for literal in clause:
-            variable = literal[1:] if literal[0] == "~" else literal
-            variables.add(variable)
-
-    for variable in variables:
-        satisfying_assignment[variable] = False  # Initialize all variables to False
+    result = is_satisfiable(cnf, trace=False)
+    if result is False:
+        return None
+    _, resolution_clauses = result
+    clauses = parser.parse(cnf)
+    variables = {lit.strip('~') for clause in clauses for lit in clause}
+    assignment = {var: False for var in variables}
 
     for clause in resolution_clauses:
-        for literal in clause:
-            variable = literal[1:] if literal[0] == "~" else literal
-            satisfying_assignment[variable] = not literal.startswith("~")
+        for lit in clause:
+            var = lit.strip('~')
+            assignment[var] = not lit.startswith('~')
 
-    # Check if the satisfying assignment satisfies the entire CNF
-    for clause in cnf:
-        clause_satisfied = False
-        for literal in clause:
-            variable = literal[1:] if literal[0] == "~" else literal
-            if (literal.startswith("~") and not satisfying_assignment[variable]) or (
-                    not literal.startswith("~") and satisfying_assignment[variable]):
-                clause_satisfied = True
-                break
-
-    return satisfying_assignment
+    # Final validation
+    for clause in clauses:
+        if not any((lit.startswith('~') and not assignment[lit[1:]]) or
+                   (not lit.startswith('~') and assignment[lit]) for lit in clause):
+            return None
+    return assignment
